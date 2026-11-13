@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>HTML Link Runner</title>
+  <title>HTML Link Runner + Blocker</title>
   <style>
     * { box-sizing: border-box; }
     html, body {
@@ -16,13 +16,13 @@
       color: #fff;
     }
 
-    /* Generator UI (hidden when rendering a link) */
+    /* Generator UI */
     #builder {
       max-width: 600px;
       margin: 0 auto;
       padding: 40px 20px;
     }
-    textarea, input {
+    textarea, input[type="text"] {
       width: 100%;
       background: #1c1c1e;
       color: #fff;
@@ -33,8 +33,16 @@
       font-size: 14px;
       margin-bottom: 12px;
     }
+    .option-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      font-size: 14px;
+      color: #d1d1d6;
+    }
     button {
-      background: #007aff; /* iOS Blue */
+      background: #007aff;
       color: white;
       border: none;
       padding: 14px 20px;
@@ -46,7 +54,7 @@
     }
     button:active { opacity: 0.8; }
 
-    /* Fullscreen viewport for rendered HTML (uses 100dvh for iOS Safari address bar) */
+    /* Fullscreen viewport */
     #viewer {
       position: fixed;
       inset: 0;
@@ -58,7 +66,7 @@
       background: #000;
     }
 
-    /* Force any single iframe or video inside viewer to stretch edge-to-edge */
+    /* Stretch iframes and videos edge-to-edge */
     #viewer > iframe,
     #viewer > video {
       position: fixed !important;
@@ -73,6 +81,29 @@
       border: none !important;
       display: block !important;
     }
+
+    /* Hide common ad containers if raw HTML is injected */
+    .ad, .ads, .adsbygoogle, [id*="ad-"], [class*="popup"], [class*="overlay-ad"] {
+      display: none !important;
+      pointer-events: none !important;
+    }
+
+    /* Subtle blocked popup toast notification */
+    #shield-toast {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      background: rgba(28, 28, 30, 0.9);
+      border: 1px solid #38383a;
+      color: #34c759;
+      padding: 8px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      z-index: 999999;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -81,6 +112,12 @@
   <div id="builder">
     <h2>HTML to Base64 Link Generator</h2>
     <textarea id="htmlInput" rows="8" placeholder="Paste your HTML, <iframe>, or <video> code here..."></textarea>
+    
+    <label class="option-row">
+      <input type="checkbox" id="strictSandbox" checked>
+      <span>Strict Iframe Popup Blocker (blocks new tabs from embeds)</span>
+    </label>
+
     <button onclick="generateLink()">Generate & Copy Link</button>
     <p id="status" style="color: #34c759; font-size: 14px; min-height: 20px;"></p>
     <input type="text" id="outputUrl" readonly placeholder="Your generated link will appear here...">
@@ -88,16 +125,52 @@
 
   <!-- Render Mode -->
   <div id="viewer"></div>
+  <div id="shield-toast">Popup Blocked</div>
 
   <script>
-    // UTF-8 safe Base64 Encode
+    // 1. GLOBAL POPUP & REDIRECT SHIELD
+    let blockedCount = 0;
+    function notifyBlocked() {
+      blockedCount++;
+      const toast = document.getElementById('shield-toast');
+      if (toast) {
+        toast.textContent = `Blocked ${blockedCount} popup${blockedCount > 1 ? 's' : ''}`;
+        toast.style.opacity = '1';
+        clearTimeout(window._toastTimer);
+        window._toastTimer = setTimeout(() => { toast.style.opacity = '0'; }, 2500);
+      }
+    }
+
+    // Override window.open to stop script popups
+    window.open = function() {
+      notifyBlocked();
+      return null;
+    };
+
+    // Prevent malicious embeds from hijacking/redirecting the top browser tab
+    window.addEventListener('beforeunload', (e) => {
+      if (new URLSearchParams(window.location.search).has('v')) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    // Block target="_blank" click hijacking on outer HTML
+    document.addEventListener('click', (e) => {
+      const anchor = e.target.closest('a');
+      if (anchor && anchor.target === '_blank') {
+        e.preventDefault();
+        notifyBlocked();
+      }
+    }, true);
+
+    // 2. BASE64 HELPERS
     function encodeBase64(str) {
       const bytes = new TextEncoder().encode(str);
       const binString = Array.from(bytes, (byte) => String.fromCodePoint(byte)).join("");
       return btoa(binString);
     }
 
-    // UTF-8 safe Base64 Decode (Supports standard and URL-safe Base64)
     function decodeBase64(base64) {
       const normalized = base64.replace(/-/g, '+').replace(/_/g, '/');
       const binString = atob(normalized);
@@ -105,32 +178,34 @@
       return new TextDecoder().decode(bytes);
     }
 
-    // Generate the shareable URL
+    // 3. LINK GENERATOR
     function generateLink() {
       const rawHtml = document.getElementById('htmlInput').value.trim();
       if (!rawHtml) return;
 
+      const strict = document.getElementById('strictSandbox').checked ? '1' : '0';
       const encoded = encodeBase64(rawHtml);
       const baseUrl = window.location.origin + window.location.pathname;
-      const finalUrl = `${baseUrl}?v=${encodeURIComponent(encoded)}`;
+      const finalUrl = `${baseUrl}?v=${encodeURIComponent(encoded)}&sb=${strict}`;
 
       const outputBox = document.getElementById('outputUrl');
       outputBox.value = finalUrl;
       outputBox.select();
-      outputBox.setSelectionRange(0, 99999); // Mobile iOS selection fix
+      outputBox.setSelectionRange(0, 99999);
 
       if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(finalUrl);
       } else {
         document.execCommand('copy');
       }
-      document.getElementById('status').textContent = "Link generated and copied to clipboard!";
+      document.getElementById('status').textContent = "Link generated with popup protection!";
     }
 
-    // Render payload on page load
+    // 4. VIEWER RENDERER
     window.addEventListener('DOMContentLoaded', () => {
       const params = new URLSearchParams(window.location.search);
       const payload = params.get('v');
+      const useSandbox = params.get('sb') !== '0'; // Enabled by default
 
       if (payload) {
         document.getElementById('builder').style.display = 'none';
@@ -144,7 +219,7 @@
 
           viewer.innerHTML = decodedHtml;
 
-          // Patch all <iframe> elements to stretch full-screen & allow playback
+          // Patch all <iframe> elements
           viewer.querySelectorAll('iframe').forEach(iframe => {
             iframe.style.setProperty('width', '100vw', 'important');
             iframe.style.setProperty('height', '100dvh', 'important');
@@ -154,9 +229,14 @@
             iframe.setAttribute('allowfullscreen', '');
             iframe.setAttribute('webkitallowfullscreen', '');
             iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture; encrypted-media');
+
+            // Apply sandbox without 'allow-popups' to stop iframe new-tab ads
+            if (useSandbox && !iframe.hasAttribute('sandbox')) {
+              iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-presentation');
+            }
           });
 
-          // Patch all <video> elements for iOS Safari inline & stretched playback
+          // Patch all <video> elements for iOS Safari
           viewer.querySelectorAll('video').forEach(video => {
             video.style.setProperty('width', '100vw', 'important');
             video.style.setProperty('height', '100dvh', 'important');
@@ -165,8 +245,15 @@
             video.setAttribute('webkit-playsinline', '');
           });
 
-          // Re-execute any <script> tags included in the HTML
+          // Re-execute inline scripts (filtering out common ad-network script domains)
+          const blockedDomains = ['doubleclick.net', 'popads.net', 'popcash.net', 'adsterra', 'propellerads', 'exoclick'];
           viewer.querySelectorAll('script').forEach(oldScript => {
+            const src = (oldScript.src || '').toLowerCase();
+            if (blockedDomains.some(domain => src.includes(domain))) {
+              notifyBlocked();
+              oldScript.remove();
+              return;
+            }
             const newScript = document.createElement('script');
             Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
             newScript.appendChild(document.createTextNode(oldScript.innerHTML));

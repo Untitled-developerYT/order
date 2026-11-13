@@ -1,9 +1,11 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>HTML Link Runner + Blocker</title>
+  <title>HTML Runner & Direct Video Exporter</title>
+  <script src="https://jsdelivr.net"></script>
   <style>
     * { box-sizing: border-box; }
     html, body {
@@ -16,12 +18,52 @@
       color: #fff;
     }
 
-    /* Generator UI */
+    /* Builder UI */
     #builder {
       max-width: 600px;
       margin: 0 auto;
-      padding: 40px 20px;
+      padding: 36px 20px;
     }
+    h2 {
+      margin-top: 0;
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    /* Mode Switcher Tabs */
+    .tabs {
+      display: flex;
+      background: #1c1c1e;
+      border-radius: 10px;
+      padding: 4px;
+      margin-bottom: 18px;
+      border: 1px solid #2c2c2e;
+    }
+    .tab-btn {
+      flex: 1;
+      background: transparent;
+      color: #8e8e93;
+      border: none;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .tab-btn.active {
+      background: #2c2c2e;
+      color: #fff;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+
+    .mode-desc {
+      font-size: 13px;
+      color: #98989d;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+
     textarea, input[type="text"] {
       width: 100%;
       background: #1c1c1e;
@@ -40,8 +82,9 @@
       margin-bottom: 16px;
       font-size: 14px;
       color: #d1d1d6;
+      cursor: pointer;
     }
-    button {
+    .action-btn {
       background: #007aff;
       color: white;
       border: none;
@@ -52,9 +95,21 @@
       cursor: pointer;
       width: 100%;
     }
-    button:active { opacity: 0.8; }
+    .action-btn:active { opacity: 0.8; }
 
-    /* Fullscreen viewport */
+    #errorBox {
+      display: none;
+      background: rgba(255, 59, 48, 0.15);
+      border: 1px solid #ff3b30;
+      color: #ff453a;
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+
+    /* Fullscreen Viewer */
     #viewer {
       position: fixed;
       inset: 0;
@@ -62,38 +117,34 @@
       height: 100vh;
       height: 100dvh;
       display: none;
-      overflow: hidden;
       background: #000;
+      overflow: auto;
     }
 
-    /* Stretch iframes and videos edge-to-edge */
-    #viewer > iframe,
     #viewer > video {
       position: fixed !important;
       inset: 0 !important;
       width: 100vw !important;
       height: 100vh !important;
       height: 100dvh !important;
-      max-width: none !important;
-      max-height: none !important;
+      object-fit: contain !important;
+      background: #000 !important;
       margin: 0 !important;
       padding: 0 !important;
       border: none !important;
       display: block !important;
     }
 
-    /* Hide common ad containers if raw HTML is injected */
     .ad, .ads, .adsbygoogle, [id*="ad-"], [class*="popup"], [class*="overlay-ad"] {
       display: none !important;
       pointer-events: none !important;
     }
 
-    /* Subtle blocked popup toast notification */
     #shield-toast {
       position: fixed;
       bottom: 16px;
       right: 16px;
-      background: rgba(28, 28, 30, 0.9);
+      background: rgba(28, 28, 30, 0.92);
       border: 1px solid #38383a;
       color: #34c759;
       padding: 8px 14px;
@@ -108,28 +159,42 @@
 </head>
 <body>
 
-  <!-- Link Generator Mode -->
+  <!-- Generator UI -->
   <div id="builder">
-    <h2>HTML to Base64 Link Generator</h2>
-    <textarea id="htmlInput" rows="8" placeholder="Paste your HTML, <iframe>, or <video> code here..."></textarea>
-    
-    <label class="option-row">
+    <h2>HTML & Direct Video Runner</h2>
+
+    <div class="tabs">
+      <button class="tab-btn active" id="tab-code" onclick="switchMode('code')">1. Code Runner</button>
+      <button class="tab-btn" id="tab-video" onclick="switchMode('video')">2. Direct Video (No Iframes)</button>
+    </div>
+
+    <p class="mode-desc" id="modeDesc">
+      <strong>Code Runner:</strong> Compresses and renders full HTML, CSS, and JS snippets via URL hash (no server length limits) while blocking popups and ad scripts.
+    </p>
+
+    <div id="errorBox"></div>
+
+    <textarea id="htmlInput" rows="8" placeholder="Paste your HTML code here (even large files work now)..."></textarea>
+
+    <label class="option-row" id="sandboxRow">
       <input type="checkbox" id="strictSandbox" checked>
-      <span>Strict Iframe Popup Blocker (blocks new tabs from embeds)</span>
+      <span>Strict Iframe Sandbox (blocks new-tab popups in Code mode)</span>
     </label>
 
-    <button onclick="generateLink()">Generate & Copy Link</button>
+    <button class="action-btn" id="generateBtn" onclick="generateLink()">Compress & Copy Link</button>
     <p id="status" style="color: #34c759; font-size: 14px; min-height: 20px;"></p>
-    <input type="text" id="outputUrl" readonly placeholder="Your generated link will appear here...">
+    <input type="text" id="outputUrl" readonly placeholder="Your compressed # link will appear here...">
   </div>
 
-  <!-- Render Mode -->
+  <!-- Fullscreen Viewer -->
   <div id="viewer"></div>
   <div id="shield-toast">Popup Blocked</div>
 
   <script>
-    // 1. GLOBAL POPUP & REDIRECT SHIELD
+    let currentMode = 'code';
     let blockedCount = 0;
+
+    // 1. GLOBAL POPUP & REDIRECT SHIELD
     function notifyBlocked() {
       blockedCount++;
       const toast = document.getElementById('shield-toast');
@@ -141,21 +206,15 @@
       }
     }
 
-    // Override window.open to stop script popups
-    window.open = function() {
-      notifyBlocked();
-      return null;
-    };
+    window.open = () => { notifyBlocked(); return null; };
 
-    // Prevent malicious embeds from hijacking/redirecting the top browser tab
     window.addEventListener('beforeunload', (e) => {
-      if (new URLSearchParams(window.location.search).has('v')) {
+      if (window.location.hash.includes('v=') || window.location.search.includes('v=')) {
         e.preventDefault();
         e.returnValue = '';
       }
     });
 
-    // Block target="_blank" click hijacking on outer HTML
     document.addEventListener('click', (e) => {
       const anchor = e.target.closest('a');
       if (anchor && anchor.target === '_blank') {
@@ -164,108 +223,216 @@
       }
     }, true);
 
-    // 2. BASE64 HELPERS
-    function encodeBase64(str) {
-      const bytes = new TextEncoder().encode(str);
-      const binString = Array.from(bytes, (byte) => String.fromCodePoint(byte)).join("");
-      return btoa(binString);
-    }
+    // 2. MODE SWITCHER
+    function switchMode(mode) {
+      currentMode = mode;
+      document.getElementById('tab-code').classList.toggle('active', mode === 'code');
+      document.getElementById('tab-video').classList.toggle('active', mode === 'video');
 
-    function decodeBase64(base64) {
-      const normalized = base64.replace(/-/g, '+').replace(/_/g, '/');
-      const binString = atob(normalized);
-      const bytes = Uint8Array.from(binString, (m) => m.codePointAt(0));
-      return new TextDecoder().decode(bytes);
-    }
+      const desc = document.getElementById('modeDesc');
+      const input = document.getElementById('htmlInput');
+      const btn = document.getElementById('generateBtn');
+      const sandboxRow = document.getElementById('sandboxRow');
+      document.getElementById('errorBox').style.display = 'none';
+      document.getElementById('status').textContent = '';
 
-    // 3. LINK GENERATOR
-    function generateLink() {
-      const rawHtml = document.getElementById('htmlInput').value.trim();
-      if (!rawHtml) return;
-
-      const strict = document.getElementById('strictSandbox').checked ? '1' : '0';
-      const encoded = encodeBase64(rawHtml);
-      const baseUrl = window.location.origin + window.location.pathname;
-      const finalUrl = `${baseUrl}?v=${encodeURIComponent(encoded)}&sb=${strict}`;
-
-      const outputBox = document.getElementById('outputUrl');
-      outputBox.value = finalUrl;
-      outputBox.select();
-      outputBox.setSelectionRange(0, 99999);
-
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(finalUrl);
+      if (mode === 'code') {
+        desc.innerHTML = '<strong>Code Runner:</strong> Compresses and renders full HTML, CSS, and JS snippets via URL hash (no server length limits) while blocking popups and ad scripts.';
+        input.placeholder = 'Paste your HTML, CSS, or JS code here...';
+        btn.textContent = 'Compress & Copy Link';
+        sandboxRow.style.display = 'flex';
       } else {
-        document.execCommand('copy');
+        desc.innerHTML = '<strong>Direct Video Mode (No Iframes):</strong> Denies all iframes and ad wrappers. Paste a direct <code>.mp4</code>, <code>.m3u8</code>, or <code>&lt;video&gt;</code> source URL.';
+        input.placeholder = 'Paste direct video source URL (e.g., https://example.com or .m3u8)...';
+        btn.textContent = 'Export Clean Video Player Link';
+        sandboxRow.style.display = 'none';
       }
-      document.getElementById('status').textContent = "Link generated with popup protection!";
     }
 
-    // 4. VIEWER RENDERER
-    window.addEventListener('DOMContentLoaded', () => {
-      const params = new URLSearchParams(window.location.search);
-      const payload = params.get('v');
-      const useSandbox = params.get('sb') !== '0'; // Enabled by default
+    // 3. NATIVE BROWSER GZIP COMPRESSION + URL-SAFE BASE64
+    function bytesToBase64Url(bytes) {
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
 
-      if (payload) {
-        document.getElementById('builder').style.display = 'none';
-        const viewer = document.getElementById('viewer');
-        viewer.style.display = 'block';
+    function base64UrlToBytes(b64) {
+      const normalized = b64.replace(/-/g, '+').replace(/_/g, '/');
+      const bin = atob(normalized);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    }
 
-        try {
-          const decodedHtml = payload.trim().startsWith('<')
-            ? payload
-            : decodeBase64(payload);
-
-          viewer.innerHTML = decodedHtml;
-
-          // Patch all <iframe> elements
-          viewer.querySelectorAll('iframe').forEach(iframe => {
-            iframe.style.setProperty('width', '100vw', 'important');
-            iframe.style.setProperty('height', '100dvh', 'important');
-            iframe.style.setProperty('position', 'fixed', 'important');
-            iframe.style.setProperty('inset', '0', 'important');
-            iframe.style.setProperty('border', 'none', 'important');
-            iframe.setAttribute('allowfullscreen', '');
-            iframe.setAttribute('webkitallowfullscreen', '');
-            iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture; encrypted-media');
-
-            // Apply sandbox without 'allow-popups' to stop iframe new-tab ads
-            if (useSandbox && !iframe.hasAttribute('sandbox')) {
-              iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-presentation');
-            }
-          });
-
-          // Patch all <video> elements for iOS Safari
-          viewer.querySelectorAll('video').forEach(video => {
-            video.style.setProperty('width', '100vw', 'important');
-            video.style.setProperty('height', '100dvh', 'important');
-            video.style.setProperty('object-fit', 'contain', 'important');
-            video.setAttribute('playsinline', '');
-            video.setAttribute('webkit-playsinline', '');
-          });
-
-          // Re-execute inline scripts (filtering out common ad-network script domains)
-          const blockedDomains = ['doubleclick.net', 'popads.net', 'popcash.net', 'adsterra', 'propellerads', 'exoclick'];
-          viewer.querySelectorAll('script').forEach(oldScript => {
-            const src = (oldScript.src || '').toLowerCase();
-            if (blockedDomains.some(domain => src.includes(domain))) {
-              notifyBlocked();
-              oldScript.remove();
-              return;
-            }
-            const newScript = document.createElement('script');
-            Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
-            newScript.appendChild(document.createTextNode(oldScript.innerHTML));
-            oldScript.parentNode.replaceChild(newScript, oldScript);
-          });
-
-        } catch (err) {
-          viewer.style.overflow = 'auto';
-          viewer.innerHTML = `<p style="padding:20px; color:#ff3b30;">Invalid HTML or Base64 link format.</p>`;
-        }
+    async function compressString(str) {
+      if ('CompressionStream' in window) {
+        const stream = new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'));
+        const buffer = await new Response(stream).arrayBuffer();
+        return 'gz_' + bytesToBase64Url(new Uint8Array(buffer));
       }
-    });
-  </script>
-</body>
-</html>
+      return 'raw_' + bytesToBase64Url(new TextEncoder().encode(str));
+    }
+
+    async function decompressString(payload) {
+      if (payload.startsWith('gz_') && 'DecompressionStream' in window) {
+        const bytes = base64UrlToBytes(payload.slice(3));
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+        return await new Response(stream).text();
+      }
+      if (payload.startsWith('raw_')) {
+        return new TextDecoder().decode(base64UrlToBytes(payload.slice(4)));
+      }
+      // Backwards compatibility with older uncompressed links
+      return new TextDecoder().decode(base64UrlToBytes(payload));
+    }
+
+    // 4. STRICT DIRECT VIDEO SOURCE VALIDATOR
+    function validateDirectVideoSource(input) {
+      const trimmed = input.trim();
+
+      if (/<iframe/i.test(trimmed)) {
+        return { error: '<strong>Iframe Denied:</strong> Iframes are blocked in this mode. Please provide the direct <code>.mp4</code> or <code>.m3u8</code> video source URL instead.' };
+      }
+      if (/blob:/i.test(trimmed)) {
+        return { error: '<strong>Blob URL Denied:</strong> <code>blob:</code> links only work in the tab where they were created. Find the underlying <code>https://...m3u8</code> or <code>.mp4</code> link in your browser\'s Network tab.' };
+      }
+      if (trimmed.startsWith('<')) {
+        const doc = new DOMParser().parseFromString(trimmed, 'text/html');
+        const videoEl = doc.querySelector('video[src^="http"], video source[src^="http"]');
+        if (videoEl) return { src: videoEl.getAttribute('src') };
+
+return { error: '**No Direct Video Source Found:** Please provide a valid https:// video file or stream URL.' };
+}
+if (/^https?:\\/\\//i.test(trimmed)) {
+return { src: trimmed };
+}
+return { error: '**Invalid Source:** Please enter a valid https:// direct video source link.' };
+}
+
+// 5. LINK GENERATOR (USES # HASH SO SERVER NEVER REJECTS LONG URLS)
+async function generateLink() {
+const rawInput = document.getElementById('htmlInput').value.trim();
+const status = document.getElementById('status');
+const errorBox = document.getElementById('errorBox');
+errorBox.style.display = 'none';
+status.textContent = '';
+
+if (!rawInput) return;
+
+const strict = document.getElementById('strictSandbox').checked ? '1' : '0';
+let targetData = rawInput;
+
+if (currentMode === 'video') {
+const result = validateDirectVideoSource(rawInput);
+if (result.error) {
+errorBox.innerHTML = result.error;
+errorBox.style.display = 'block';
+return;
+}
+targetData = result.src;
+}
+
+const compressedPayload = await compressString(targetData);
+const baseUrl = window.location.origin + window.location.pathname;
+// Uses #hash instead of ?query to bypass GitHub Pages 414 URI Too Long limits
+const finalUrl = `${baseUrl}#m=${currentMode}&sb=${strict}&v=${compressedPayload}`;
+
+const outputBox = document.getElementById('outputUrl');
+outputBox.value = finalUrl;
+outputBox.select();
+outputBox.setSelectionRange(0, 999999);
+
+if (navigator.clipboard && window.isSecureContext) {
+navigator.clipboard.writeText(finalUrl);
+} else {
+document.execCommand('copy');
+}
+
+const ratio = Math.round((1 - (compressedPayload.length / rawInput.length)) * 100);
+status.style.color = '#34c759';
+status.textContent = ratio > 0
+? `Compressed by ${ratio}% & copied link (414 error fixed)!`
+: 'Link generated & copied to clipboard!';
+}
+
+// 6. VIEWER RENDERER (READS FROM #HASH OR ?QUERY)
+async function renderFromUrl() {
+// Support both new #hash URLs and legacy ?query URLs
+const rawHash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
+const params = new URLSearchParams(rawHash || window.location.search);
+const payload = params.get('v');
+const mode = params.get('m') || 'code';
+const useSandbox = params.get('sb') !== '0';
+
+if (!payload) return;
+
+document.getElementById('builder').style.display = 'none';
+const viewer = document.getElementById('viewer');
+viewer.style.display = 'block';
+
+try {
+const decoded = payload.trim().startsWith('<') ? payload : await decompressString(payload);
+
+// MODE A: DIRECT NATIVE VIDEO PLAYER
+if (mode === 'video') {
+viewer.style.overflow = 'hidden';
+if (/\<iframe/i.test(decoded) || !/^https?:\\/\\//i.test(decoded.trim())) {
+throw new Error('Iframes are denied in Direct Video mode. Only direct https:// video sources are permitted.');
+}
+
+const streamUrl = decoded.trim();
+const video = document.createElement('video');
+video.controls = true;
+video.autoplay = true;
+video.setAttribute('playsinline', '');
+video.setAttribute('webkit-playsinline', '');
+viewer.appendChild(video);
+
+if (streamUrl.includes('.m3u8') && !video.canPlayType('application/vnd.apple.mpegurl') && window.Hls && Hls.isSupported()) {
+const hls = new Hls();
+hls.loadSource(streamUrl);
+hls.attachMedia(video);
+} else {
+video.src = streamUrl;
+}
+return;
+}
+
+// MODE B: AD-BLOCKED CODE RUNNER
+viewer.innerHTML = decoded;
+
+viewer.querySelectorAll('iframe').forEach(iframe => {
+iframe.setAttribute('allowfullscreen', '');
+iframe.setAttribute('webkitallowfullscreen', '');
+iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture; encrypted-media');
+if (useSandbox && !iframe.hasAttribute('sandbox')) {
+iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-presentation');
+}
+});
+
+viewer.querySelectorAll('video').forEach(video => {
+video.setAttribute('playsinline', '');
+video.setAttribute('webkit-playsinline', '');
+});
+
+const blockedDomains = ['doubleclick.net', 'popads.net', 'popcash.net', 'adsterra', 'propellerads', 'exoclick'];
+viewer.querySelectorAll('script').forEach(oldScript => {
+const src = (oldScript.src || '').toLowerCase();
+if (blockedDomains.some(domain => src.includes(domain))) {
+notifyBlocked();
+oldScript.remove();
+return;
+}
+const newScript = document.createElement('script');
+Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
+newScript.appendChild(document.createTextNode(oldScript.innerHTML));
+oldScript.parentNode.replaceChild(newScript, oldScript);
+});
+
+} catch (err) {
+viewer.innerHTML = `<div style="padding:24px; color:#ff453a; font-family:sans-serif;"><h3>Blocked / Invalid Source</h3><p>${err.message}</p></div>`;
+}
+}
+
+window.addEventListener('DOMContentLoaded', renderFromUrl);
+window.addEventListener('hashchange', () => window.location.reload());

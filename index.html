@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>HTML Runner & Direct Video Exporter</title>
-  <script src="https://jsdelivr.net"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
   <style>
     * { box-sizing: border-box; }
     html, body {
@@ -208,13 +208,6 @@
 
     window.open = () => { notifyBlocked(); return null; };
 
-    window.addEventListener('beforeunload', (e) => {
-      if (window.location.hash.includes('v=') || window.location.search.includes('v=')) {
-        e.preventDefault();
-        e.returnValue = '';
-      }
-    });
-
     document.addEventListener('click', (e) => {
       const anchor = e.target.closest('a');
       if (anchor && anchor.target === '_blank') {
@@ -266,9 +259,13 @@
 
     async function compressString(str) {
       if ('CompressionStream' in window) {
-        const stream = new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'));
-        const buffer = await new Response(stream).arrayBuffer();
-        return 'gz_' + bytesToBase64Url(new Uint8Array(buffer));
+        try {
+          const stream = new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'));
+          const buffer = await new Response(stream).arrayBuffer();
+          return 'gz_' + bytesToBase64Url(new Uint8Array(buffer));
+        } catch (_) {
+          // Fall back to plain Base64 if compression is unavailable.
+        }
       }
       return 'raw_' + bytesToBase64Url(new TextEncoder().encode(str));
     }
@@ -290,150 +287,207 @@
     function validateDirectVideoSource(input) {
       const trimmed = input.trim();
 
-      if (/<iframe/i.test(trimmed)) {
-        return { error: '<strong>Iframe Denied:</strong> Iframes are blocked in this mode. Please provide the direct <code>.mp4</code> or <code>.m3u8</code> video source URL instead.' };
+      if (/<iframe\b/i.test(trimmed)) {
+        return { error: '<strong>Iframe denied:</strong> Please provide a direct video URL instead.' };
       }
-      if (/blob:/i.test(trimmed)) {
-        return { error: '<strong>Blob URL Denied:</strong> <code>blob:</code> links only work in the tab where they were created. Find the underlying <code>https://...m3u8</code> or <code>.mp4</code> link in your browser\'s Network tab.' };
+
+      if (/^blob:/i.test(trimmed) || /\bsrc\s*=\s*["']blob:/i.test(trimmed)) {
+        return { error: '<strong>Blob URL denied:</strong> Blob links only work in the tab where they were created. Use the original video URL instead.' };
       }
+
       if (trimmed.startsWith('<')) {
         const doc = new DOMParser().parseFromString(trimmed, 'text/html');
-        const videoEl = doc.querySelector('video[src^="http"], video source[src^="http"]');
-        if (videoEl) return { src: videoEl.getAttribute('src') };
+        const videoSource = doc.querySelector('video[src], video source[src]');
+        const source = videoSource ? videoSource.getAttribute('src') : '';
 
-return { error: '**No Direct Video Source Found:** Please provide a valid https:// video file or stream URL.' };
-}
-if (/^https?:\\/\\//i.test(trimmed)) {
-return { src: trimmed };
-}
-return { error: '**Invalid Source:** Please enter a valid https:// direct video source link.' };
-}
+        if (source && /^https?:\/\//i.test(source.trim())) {
+          return { src: source.trim() };
+        }
 
-// 5. LINK GENERATOR (USES # HASH SO SERVER NEVER REJECTS LONG URLS)
-async function generateLink() {
-const rawInput = document.getElementById('htmlInput').value.trim();
-const status = document.getElementById('status');
-const errorBox = document.getElementById('errorBox');
-errorBox.style.display = 'none';
-status.textContent = '';
+        return { error: '<strong>No direct video source found:</strong> Include a video element with an absolute http:// or https:// source URL.' };
+      }
 
-if (!rawInput) return;
+      try {
+        const url = new URL(trimmed);
+        if (url.protocol === 'https:' || url.protocol === 'http:') {
+          return { src: url.href };
+        }
+      } catch (_) {
+        // Invalid URL.
+      }
 
-const strict = document.getElementById('strictSandbox').checked ? '1' : '0';
-let targetData = rawInput;
+      return { error: '<strong>Invalid source:</strong> Please enter a valid direct http:// or https:// video URL.' };
+    }
 
-if (currentMode === 'video') {
-const result = validateDirectVideoSource(rawInput);
-if (result.error) {
-errorBox.innerHTML = result.error;
-errorBox.style.display = 'block';
-return;
-}
-targetData = result.src;
-}
+    // 5. LINK GENERATOR (USES THE URL HASH)
+    async function generateLink() {
+      const rawInput = document.getElementById('htmlInput').value.trim();
+      const status = document.getElementById('status');
+      const errorBox = document.getElementById('errorBox');
+      const outputBox = document.getElementById('outputUrl');
+      const button = document.getElementById('generateBtn');
 
-const compressedPayload = await compressString(targetData);
-const baseUrl = window.location.origin + window.location.pathname;
-// Uses #hash instead of ?query to bypass GitHub Pages 414 URI Too Long limits
-const finalUrl = `${baseUrl}#m=${currentMode}&sb=${strict}&v=${compressedPayload}`;
+      errorBox.style.display = 'none';
+      status.textContent = '';
 
-const outputBox = document.getElementById('outputUrl');
-outputBox.value = finalUrl;
-outputBox.select();
-outputBox.setSelectionRange(0, 999999);
+      if (!rawInput) {
+        status.style.color = '#ff453a';
+        status.textContent = 'Please enter some code or a video URL first.';
+        return;
+      }
 
-if (navigator.clipboard && window.isSecureContext) {
-navigator.clipboard.writeText(finalUrl);
-} else {
-document.execCommand('copy');
-}
+      button.disabled = true;
+      button.textContent = 'Generating...';
 
-const ratio = Math.round((1 - (compressedPayload.length / rawInput.length)) * 100);
-status.style.color = '#34c759';
-status.textContent = ratio > 0
-? `Compressed by ${ratio}% & copied link (414 error fixed)!`
-: 'Link generated & copied to clipboard!';
-}
+      try {
+        const strict = document.getElementById('strictSandbox').checked ? '1' : '0';
+        let targetData = rawInput;
 
-// 6. VIEWER RENDERER (READS FROM #HASH OR ?QUERY)
-async function renderFromUrl() {
-// Support both new #hash URLs and legacy ?query URLs
-const rawHash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
-const params = new URLSearchParams(rawHash || window.location.search);
-const payload = params.get('v');
-const mode = params.get('m') || 'code';
-const useSandbox = params.get('sb') !== '0';
+        if (currentMode === 'video') {
+          const result = validateDirectVideoSource(rawInput);
+          if (result.error) {
+            errorBox.innerHTML = result.error;
+            errorBox.style.display = 'block';
+            return;
+          }
+          targetData = result.src;
+        }
 
-if (!payload) return;
+        const compressedPayload = await compressString(targetData);
+        const baseUrl = window.location.origin + window.location.pathname;
+        const finalUrl = `${baseUrl}#m=${currentMode}&sb=${strict}&v=${compressedPayload}`;
 
-document.getElementById('builder').style.display = 'none';
-const viewer = document.getElementById('viewer');
-viewer.style.display = 'block';
+        outputBox.value = finalUrl;
+        outputBox.focus();
+        outputBox.select();
 
-try {
-const decoded = payload.trim().startsWith('<') ? payload : await decompressString(payload);
+        let copied = false;
+        if (navigator.clipboard && window.isSecureContext) {
+          try {
+            await navigator.clipboard.writeText(finalUrl);
+            copied = true;
+          } catch (_) {
+            copied = false;
+          }
+        }
+        if (!copied) copied = document.execCommand('copy');
 
-// MODE A: DIRECT NATIVE VIDEO PLAYER
-if (mode === 'video') {
-viewer.style.overflow = 'hidden';
-if (/\<iframe/i.test(decoded) || !/^https?:\\/\\//i.test(decoded.trim())) {
-throw new Error('Iframes are denied in Direct Video mode. Only direct https:// video sources are permitted.');
-}
+        const ratio = Math.round((1 - compressedPayload.length / rawInput.length) * 100);
+        status.style.color = '#34c759';
+        status.textContent = copied
+          ? (ratio > 0 ? `Compressed by ${ratio}% and copied the link.` : 'Link generated and copied.')
+          : 'Link generated. Copy it from the box above.';
+      } catch (error) {
+        status.style.color = '#ff453a';
+        status.textContent = `Could not generate link: ${error.message}`;
+      } finally {
+        button.disabled = false;
+        button.textContent = currentMode === 'video'
+          ? 'Export Clean Video Player Link'
+          : 'Compress & Copy Link';
+      }
+    }
 
-const streamUrl = decoded.trim();
-const video = document.createElement('video');
-video.controls = true;
-video.autoplay = true;
-video.setAttribute('playsinline', '');
-video.setAttribute('webkit-playsinline', '');
-viewer.appendChild(video);
+    // 6. VIEWER RENDERER (READS FROM #HASH OR LEGACY ?QUERY)
+    async function renderFromUrl() {
+      const rawHash = window.location.hash.startsWith('#')
+        ? window.location.hash.slice(1)
+        : '';
+      const params = new URLSearchParams(rawHash || window.location.search);
+      const payload = params.get('v');
+      const mode = params.get('m') || 'code';
+      const useSandbox = params.get('sb') !== '0';
 
-if (streamUrl.includes('.m3u8') && !video.canPlayType('application/vnd.apple.mpegurl') && window.Hls && Hls.isSupported()) {
-const hls = new Hls();
-hls.loadSource(streamUrl);
-hls.attachMedia(video);
-} else {
-video.src = streamUrl;
-}
-return;
-}
+      if (!payload) return;
 
-// MODE B: AD-BLOCKED CODE RUNNER
-viewer.innerHTML = decoded;
+      document.getElementById('builder').style.display = 'none';
+      const viewer = document.getElementById('viewer');
+      viewer.style.display = 'block';
 
-viewer.querySelectorAll('iframe').forEach(iframe => {
-iframe.setAttribute('allowfullscreen', '');
-iframe.setAttribute('webkitallowfullscreen', '');
-iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture; encrypted-media');
-if (useSandbox && !iframe.hasAttribute('sandbox')) {
-iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-presentation');
-}
-});
+      try {
+        const decoded = await decompressString(payload);
 
-viewer.querySelectorAll('video').forEach(video => {
-video.setAttribute('playsinline', '');
-video.setAttribute('webkit-playsinline', '');
-});
+        // MODE A: DIRECT NATIVE VIDEO PLAYER
+        if (mode === 'video') {
+          if (!/^https?:\/\//i.test(decoded.trim())) {
+            throw new Error('Only direct http:// or https:// video URLs are accepted.');
+          }
 
-const blockedDomains = ['doubleclick.net', 'popads.net', 'popcash.net', 'adsterra', 'propellerads', 'exoclick'];
-viewer.querySelectorAll('script').forEach(oldScript => {
-const src = (oldScript.src || '').toLowerCase();
-if (blockedDomains.some(domain => src.includes(domain))) {
-notifyBlocked();
-oldScript.remove();
-return;
-}
-const newScript = document.createElement('script');
-Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
-newScript.appendChild(document.createTextNode(oldScript.innerHTML));
-oldScript.parentNode.replaceChild(newScript, oldScript);
-});
+          viewer.style.overflow = 'hidden';
+          const video = document.createElement('video');
+          video.controls = true;
+          video.autoplay = true;
+          video.setAttribute('playsinline', '');
+          video.setAttribute('webkit-playsinline', '');
+          video.style.width = '100%';
+          video.style.height = '100%';
+          video.style.objectFit = 'contain';
+          viewer.appendChild(video);
 
-} catch (err) {
-viewer.innerHTML = `<div style="padding:24px; color:#ff453a; font-family:sans-serif;"><h3>Blocked / Invalid Source</h3><p>${err.message}</p></div>`;
-}
-}
+          const streamUrl = decoded.trim();
+          if (/\.m3u8(?:$|[?#])/i.test(streamUrl) &&
+              !video.canPlayType('application/vnd.apple.mpegurl')) {
+            if (window.Hls && window.Hls.isSupported()) {
+              const hls = new window.Hls();
+              hls.loadSource(streamUrl);
+              hls.attachMedia(video);
+            } else {
+              throw new Error('This browser cannot play HLS streams. Try a direct MP4 URL or a browser with HLS support.');
+            }
+          } else {
+            video.src = streamUrl;
+          }
+          return;
+        }
 
-window.addEventListener('DOMContentLoaded', renderFromUrl);
-window.addEventListener('hashchange', () => window.location.reload());
-</script>
+        // MODE B: HTML CODE RUNNER
+        viewer.innerHTML = decoded;
+
+        viewer.querySelectorAll('iframe').forEach(iframe => {
+          iframe.setAttribute('allowfullscreen', '');
+          iframe.setAttribute('webkitallowfullscreen', '');
+          iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture; encrypted-media');
+          if (useSandbox && !iframe.hasAttribute('sandbox')) {
+            iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-presentation');
+          }
+        });
+
+        viewer.querySelectorAll('video').forEach(video => {
+          video.setAttribute('playsinline', '');
+          video.setAttribute('webkit-playsinline', '');
+        });
+
+        const blockedDomains = [
+          'doubleclick.net', 'popads.net', 'popcash.net',
+          'adsterra', 'propellerads', 'exoclick'
+        ];
+
+        viewer.querySelectorAll('script').forEach(oldScript => {
+          const src = (oldScript.getAttribute('src') || '').toLowerCase();
+          if (blockedDomains.some(domain => src.includes(domain))) {
+            notifyBlocked();
+            oldScript.remove();
+            return;
+          }
+
+          const newScript = document.createElement('script');
+          Array.from(oldScript.attributes).forEach(attr => {
+            newScript.setAttribute(attr.name, attr.value);
+          });
+          newScript.textContent = oldScript.textContent;
+          oldScript.parentNode.replaceChild(newScript, oldScript);
+        });
+      } catch (error) {
+        viewer.innerHTML = `
+          <div style="padding:24px;color:#ff453a;font-family:sans-serif;">
+            <h3>Unable to load content</h3>
+            <p>${error.message}</p>
+          </div>`;
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', renderFromUrl);
+    window.addEventListener('hashchange', () => window.location.reload());
+  </script>
+</body>
+</html>

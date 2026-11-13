@@ -6,24 +6,28 @@
   <title>HTML Link Runner</title>
   <style>
     * { box-sizing: border-box; }
-    body {
+    html, body {
       margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #111;
+      background: #000;
       color: #fff;
     }
+
     /* Generator UI (hidden when rendering a link) */
     #builder {
       max-width: 600px;
-      margin: 40px auto;
-      padding: 20px;
+      margin: 0 auto;
+      padding: 40px 20px;
     }
     textarea, input {
       width: 100%;
-      background: #222;
+      background: #1c1c1e;
       color: #fff;
-      border: 1px solid #444;
-      border-radius: 8px;
+      border: 1px solid #38383a;
+      border-radius: 10px;
       padding: 12px;
       font-family: monospace;
       font-size: 14px;
@@ -33,19 +37,41 @@
       background: #007aff; /* iOS Blue */
       color: white;
       border: none;
-      padding: 12px 20px;
-      border-radius: 8px;
+      padding: 14px 20px;
+      border-radius: 10px;
       font-size: 16px;
       font-weight: 600;
       cursor: pointer;
       width: 100%;
     }
     button:active { opacity: 0.8; }
-    /* Fullscreen viewport for rendered HTML */
+
+    /* Fullscreen viewport for rendered HTML (uses 100dvh for iOS Safari address bar) */
     #viewer {
+      position: fixed;
+      inset: 0;
       width: 100vw;
-      min-height: 100vh;
+      height: 100vh;
+      height: 100dvh;
       display: none;
+      overflow: hidden;
+      background: #000;
+    }
+
+    /* Force any single iframe or video inside viewer to stretch edge-to-edge */
+    #viewer > iframe,
+    #viewer > video {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      height: 100dvh !important;
+      max-width: none !important;
+      max-height: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: none !important;
+      display: block !important;
     }
   </style>
 </head>
@@ -54,9 +80,9 @@
   <!-- Link Generator Mode -->
   <div id="builder">
     <h2>HTML to Base64 Link Generator</h2>
-    <textarea id="htmlInput" rows="8" placeholder="Paste your HTML code here..."></textarea>
+    <textarea id="htmlInput" rows="8" placeholder="Paste your HTML, <iframe>, or <video> code here..."></textarea>
     <button onclick="generateLink()">Generate & Copy Link</button>
-    <p id="status" style="color: #4cd964; font-size: 14px;"></p>
+    <p id="status" style="color: #34c759; font-size: 14px; min-height: 20px;"></p>
     <input type="text" id="outputUrl" readonly placeholder="Your generated link will appear here...">
   </div>
 
@@ -64,14 +90,14 @@
   <div id="viewer"></div>
 
   <script>
-    // UTF-8 safe Base64 Encode (Prevents crashes with emojis/symbols on iOS)
+    // UTF-8 safe Base64 Encode
     function encodeBase64(str) {
       const bytes = new TextEncoder().encode(str);
       const binString = Array.from(bytes, (byte) => String.fromCodePoint(byte)).join("");
       return btoa(binString);
     }
 
-    // UTF-8 safe Base64 Decode (Handles URL-safe '-' and '_' characters)
+    // UTF-8 safe Base64 Decode (Supports standard and URL-safe Base64)
     function decodeBase64(base64) {
       const normalized = base64.replace(/-/g, '+').replace(/_/g, '/');
       const binString = atob(normalized);
@@ -91,8 +117,8 @@
       const outputBox = document.getElementById('outputUrl');
       outputBox.value = finalUrl;
       outputBox.select();
-      
-      // Copy to clipboard (with fallback for older iOS Safari versions)
+      outputBox.setSelectionRange(0, 99999); // Mobile iOS selection fix
+
       if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(finalUrl);
       } else {
@@ -101,7 +127,7 @@
       document.getElementById('status').textContent = "Link generated and copied to clipboard!";
     }
 
-    // Check URL on load for ?v= parameter
+    // Render payload on page load
     window.addEventListener('DOMContentLoaded', () => {
       const params = new URLSearchParams(window.location.search);
       const payload = params.get('v');
@@ -112,24 +138,34 @@
         viewer.style.display = 'block';
 
         try {
-          // Support both Base64 and raw URL-encoded HTML
-          let decodedHtml = "";
-          if (payload.trim().startsWith('<')) {
-            decodedHtml = payload;
-          } else {
-            decodedHtml = decodeBase64(payload);
-          }
+          const decodedHtml = payload.trim().startsWith('<')
+            ? payload
+            : decodeBase64(payload);
 
           viewer.innerHTML = decodedHtml;
 
-          // iOS Safari Fixes:
-          // 1. Force inline video playback so iOS doesn't hijack fullscreen
+          // Patch all <iframe> elements to stretch full-screen & allow playback
+          viewer.querySelectorAll('iframe').forEach(iframe => {
+            iframe.style.setProperty('width', '100vw', 'important');
+            iframe.style.setProperty('height', '100dvh', 'important');
+            iframe.style.setProperty('position', 'fixed', 'important');
+            iframe.style.setProperty('inset', '0', 'important');
+            iframe.style.setProperty('border', 'none', 'important');
+            iframe.setAttribute('allowfullscreen', '');
+            iframe.setAttribute('webkitallowfullscreen', '');
+            iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture; encrypted-media');
+          });
+
+          // Patch all <video> elements for iOS Safari inline & stretched playback
           viewer.querySelectorAll('video').forEach(video => {
+            video.style.setProperty('width', '100vw', 'important');
+            video.style.setProperty('height', '100dvh', 'important');
+            video.style.setProperty('object-fit', 'contain', 'important');
             video.setAttribute('playsinline', '');
             video.setAttribute('webkit-playsinline', '');
           });
 
-          // 2. Re-execute any <script> tags injected via innerHTML
+          // Re-execute any <script> tags included in the HTML
           viewer.querySelectorAll('script').forEach(oldScript => {
             const newScript = document.createElement('script');
             Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
@@ -138,6 +174,7 @@
           });
 
         } catch (err) {
+          viewer.style.overflow = 'auto';
           viewer.innerHTML = `<p style="padding:20px; color:#ff3b30;">Invalid HTML or Base64 link format.</p>`;
         }
       }
